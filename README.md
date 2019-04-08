@@ -26,3 +26,7 @@ This will cause the message "blech" to show up in the default channel of
 
 
 see `./chirper --help` for all options and defaults
+
+## what about tests?
+
+Yeah, I feel dirty about that.  todo.
