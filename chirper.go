@@ -1,5 +1,11 @@
 package main
 
+/*
+ * SERIOUSLY UGLY HACKY MESSING AROUND
+ * USER BEWARE
+ * THERE ARE NO TESTS
+ */
+
 import (
   "crypto/tls"
   "encoding/json"
@@ -7,10 +13,12 @@ import (
   "fmt"
   "log"
   "net/http"
+  "os"
+  "strings"
+  "time"
 
-  "github.com/thoj/go-ircevent"
   "github.com/gorilla/mux"
-
+  "github.com/thoj/go-ircevent"
 )
 
 var ircChan = make(chan string, 32)
@@ -20,11 +28,12 @@ type ircConfig struct {
     server string // addr:port
     nick string // joe
     ssl bool
-    ircObj *irc.Connection
+    cmdPrefix string
+    ircPrefix string
+
+    stockerPrefix string
+    newsPrefix string
 }
-
-
-var ircCfg = ircConfig{}
 
 type apiConfig struct {
     host string
@@ -33,6 +42,7 @@ type apiConfig struct {
     magickey string
 }
 
+var ircCfg = ircConfig{}
 var apiCfg = apiConfig{}
 
 
@@ -42,12 +52,56 @@ func runChirper(irccon *irc.Connection, c chan string) {
         select {
         case msg = <-c:
             irccon.Privmsg(ircCfg.channel, msg)
+            time.Sleep(time.Second)
         }
     }
 }
 
+// thank goodness for stackoverflow
+// https://stackoverflow.com/questions/17156371/how-to-get-json-response-in-golang
+func getJson(url string, target interface{}) error {
+    r, err := http.Get(url)
+    if err != nil {
+        return err
+    }
+    defer r.Body.Close()
+    return json.NewDecoder(r.Body).Decode(target)
+}
 
-func runIrc(ircOpts ircConfig, c chan string) {
+func stockTicker() {
+    time.Sleep(time.Second)
+}
+
+func stocker(cmd string, ircChan chan string) {
+    ircChan <- fmt.Sprintf("%s %s", ircCfg.stockerPrefix, cmd)
+}
+
+// we want a structure similar to 
+type Command struct {
+    handle func(irc.Event, chan string)
+    helpdoc string
+}
+var cmdHandlers = make(map[string](Command))
+
+func listCmds() {
+    for cmdPrefix, c := range cmdHandlers {
+        fmt.Println("%s:\t%s", cmdPrefix, c.helpdoc)
+    }
+}
+
+
+func routeIRC(event *irc.Event) {
+    // completely lame cmd parser
+    if strings.HasPrefix(event.Message(), ircCfg.cmdPrefix) {
+        cmd := strings.TrimPrefix(event.Message(), ircCfg.cmdPrefix)
+        switch {
+        case strings.HasPrefix(cmd, "st "):
+            stocker(cmd, ircChan)
+        }
+    }
+}
+
+func runIrc(ircOpts ircConfig) {
     irccon := irc.IRC(ircOpts.nick, "chirperIRC")
     irccon.VerboseCallbackHandler = true
     irccon.Debug = true
@@ -56,13 +110,13 @@ func runIrc(ircOpts ircConfig, c chan string) {
     irccon.AddCallback("001",
         func(e *irc.Event) { irccon.Join(ircOpts.channel) })
     irccon.AddCallback("366", func(e *irc.Event) {  })
+    irccon.AddCallback("PRIVMSG", routeIRC)
     err := irccon.Connect(ircOpts.server)
     if err != nil {
         fmt.Printf("Err %s", err )
         return
     }
-    ircOpts.ircObj = irccon
-    go runChirper(irccon, c)
+    go runChirper(irccon, ircChan)
     irccon.Loop()
 }
 
@@ -73,9 +127,8 @@ func Chirp(w http.ResponseWriter, r *http.Request) {
         json.NewEncoder(w).Encode("missing msg param")
         return
     }
-    if ircCfg.ircObj == nil {
+    if ircChan != nil {
         x := string(params[0])
-        // ircCfg.ircObj.Privmsg(ircCfg.channel, x)
         ircChan <- x
     }
     json.NewEncoder(w).Encode("ok")
@@ -98,20 +151,35 @@ func setupCfg() {
         "#chirper", "irc channel to connect to" )
     flag.StringVar(&ircCfg.nick, "nick",
         "chirper", "irc nick for chirper to use" )
+    flag.StringVar(&ircCfg.stockerPrefix, "stockprefix",
+         "📈 ", "prefix for stocks output")
+    flag.StringVar(&ircCfg.newsPrefix, "newsprefix",
+         "🏢 ", "prefix for news output")
+
+    flag.StringVar(&ircCfg.cmdPrefix, "cmdprefix",
+        ".ch ", "commands to bot must start with this")
 
     flag.StringVar(&apiCfg.host, "host",
         "localhost", "http host to listen on" )
     flag.IntVar(&apiCfg.port, "port",
         8890, "http port to listen on" )
 
+    showCmds := false
+    flag.BoolVar(&showCmds, "list", false,
+        "list available irc commands and exit")
+
     flag.Parse()
+    if showCmds {
+        listCmds()
+        os.Exit(1)
+    }
 }
 
 
 func main() {
   setupCfg()
 
-  go runIrc(ircCfg, ircChan)
+  go runIrc(ircCfg)
   runHttpd(apiCfg)
   // setupIrc()
 }
